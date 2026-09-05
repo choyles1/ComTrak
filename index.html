@@ -5,18 +5,20 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="default" />
-<meta name="apple-mobile-web-app-title" content="Needs Tracker" />
-<title>Needs Tracker</title>
+<meta name="apple-mobile-web-app-title" content="Com Trak" />
+<link rel="apple-touch-icon" href="apple-touch-icon.png" />
+<link rel="icon" type="image/png" href="favicon-32.png" />
+<title>Com Trak</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Inter:wght@400;500;600&display=swap');
   * { box-sizing: border-box; }
-  html, body { margin: 0; padding: 0; background: #F3F4F1; font-family: 'Inter', -apple-system, sans-serif; }
+  html, body { margin: 0; padding: 0; background: #F7F4EC; font-family: 'Inter', -apple-system, sans-serif; }
   body { padding-bottom: env(safe-area-inset-bottom); }
   #root { min-height: 100vh; }
   .ct-scroll::-webkit-scrollbar { width: 8px; }
   .ct-scroll::-webkit-scrollbar-thumb { background: #D6D9D3; border-radius: 8px; }
   .ct-row:hover { background: #F6F5F1 !important; }
-  .ct-cat:hover { background: #EDEEEA !important; }
+  .ct-cat:hover { background: #F1EEE0 !important; }
   .ct-btn:hover { filter: brightness(0.97); }
   input, textarea, select { font-family: 'Inter', sans-serif; }
 </style>
@@ -99,9 +101,9 @@ function timeAgo(iso) {
 }
 
 const STATUS_COLOR = {
-  Pending: { bg: "#FBEEDD", fg: "#8A4E11", dot: "#C97A28" },
-  "In Progress": { bg: "#E4EDEB", fg: "#1F4E4A", dot: "#2E7A73" },
-  Resolved: { bg: "#E7F0E9", fg: "#33553F", dot: "#4F7A5D" },
+  Pending: { bg: "#FBE2DE", fg: "#8A2A1D", dot: "#C0392B" },
+  "In Progress": { bg: "#FBF0CE", fg: "#7A5C06", dot: "#D4A017" },
+  Resolved: { bg: "#E1EAE4", fg: "#1B4332", dot: "#2F6B4F" },
 };
 
 function CommunityTracker() {
@@ -173,7 +175,17 @@ function CommunityTracker() {
     for (const cat of categories) c[cat] = 0;
     for (const iss of issues) { if (c[iss.category] !== undefined) c[iss.category]++; }
     const pending = issues.filter((i) => i.status !== "Resolved").length;
-    return { byCategory: c, pending, total: issues.length };
+
+    const blank = () => ({ Pending: 0, "In Progress": 0, Resolved: 0 });
+    const byStatus = { All: blank() };
+    for (const cat of categories) byStatus[cat] = blank();
+    for (const iss of issues) {
+      if (byStatus.All[iss.status] !== undefined) byStatus.All[iss.status]++;
+      if (byStatus[iss.category] && byStatus[iss.category][iss.status] !== undefined) {
+        byStatus[iss.category][iss.status]++;
+      }
+    }
+    return { byCategory: c, byStatus, pending, total: issues.length };
   }, [issues, categories]);
 
   const filtered = useMemo(() => {
@@ -260,7 +272,7 @@ function CommunityTracker() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `needs-tracker-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    a.download = `com-trak-backup-${new Date().toISOString().slice(0, 10)}.json`;
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
     URL.revokeObjectURL(url);
   }
@@ -280,7 +292,7 @@ function CommunityTracker() {
         setIssues(parsed.issues);
         setImportMsg(`Imported ${parsed.issues.length} request${parsed.issues.length === 1 ? "" : "s"} and ${parsed.categories.length} categories.`);
       } catch (err) {
-        setImportMsg("That file doesn't look like a Needs Tracker backup.");
+        setImportMsg("That file doesn't look like a Com Trak backup.");
       }
     };
     reader.onerror = () => setImportMsg("Couldn't read that file.");
@@ -292,12 +304,12 @@ function CommunityTracker() {
       <header style={styles.header}>
         <div>
           <div style={styles.eyebrow}>Community operations</div>
-          <h1 style={styles.h1}>Needs Tracker</h1>
+          <h1 style={styles.h1}>Com Trak</h1>
         </div>
         <div style={styles.headerStats}>
           <div style={styles.statChip}><span style={{ fontWeight: 600 }}>{counts.pending}</span> open</div>
           <div style={styles.statChip}><span style={{ fontWeight: 600 }}>{counts.total}</span> total</div>
-          <div style={{ ...styles.statChip, color: syncState === "offline" ? "#A8442F" : "#5B6058" }}>
+          <div style={{ ...styles.statChip, color: syncState === "offline" ? "#A8442F" : "#5B5A48" }}>
             {syncState === "syncing" ? "Syncing…" : syncState === "offline" ? "Offline (saved locally)" : "Synced"}
           </div>
           <button style={styles.secondaryBtn} className="ct-btn" onClick={triggerImport}>Import</button>
@@ -309,23 +321,15 @@ function CommunityTracker() {
       {importMsg && <div style={styles.importBanner}>{importMsg}</div>}
 
       <div style={styles.body}>
-        <aside style={styles.sidebar}>
-          <div className="ct-cat" style={{ ...styles.catRow, ...(activeCategory === "All" ? styles.catRowActive : {}) }} onClick={() => setActiveCategory("All")}>
-            <span>All requests</span><span style={styles.catCount}>{counts.byCategory.All}</span>
-          </div>
-          <div style={styles.sidebarLabel}>Categories</div>
-          <div className="ct-scroll" style={styles.catList}>
-            {categories.map((cat) => (
-              <div key={cat} className="ct-cat" style={{ ...styles.catRow, ...(activeCategory === cat ? styles.catRowActive : {}) }} onClick={() => setActiveCategory(cat)}>
-                <span>{cat}</span><span style={styles.catCount}>{counts.byCategory[cat] || 0}</span>
-              </div>
-            ))}
-          </div>
-          <button style={styles.manageBtn} className="ct-btn" onClick={() => setCatModal(true)}>Manage categories</button>
-        </aside>
-
-        <main style={styles.main}>
+        <main style={styles.mainFull}>
           <div style={styles.filterRow}>
+            <CategoryDropdown
+              categories={categories}
+              activeCategory={activeCategory}
+              onSelect={setActiveCategory}
+              byStatus={counts.byStatus}
+              onManage={() => setCatModal(true)}
+            />
             <input style={styles.search} placeholder="Search requests..." value={search} onChange={(e) => setSearch(e.target.value)} />
             <select style={styles.select} value={activeRequester} onChange={(e) => setActiveRequester(e.target.value)}>
               <option value="All">All requesters</option>
@@ -340,7 +344,7 @@ function CommunityTracker() {
 
           <div style={styles.listHeaderRow}>
             <span>{activeCategory === "All" ? "All requests" : activeCategory}</span>
-            <span style={{ color: "#8A8F87", fontWeight: 400 }}>{filtered.length} {filtered.length === 1 ? "item" : "items"}</span>
+            <span style={{ color: "#9B9880", fontWeight: 400 }}>{filtered.length} {filtered.length === 1 ? "item" : "items"}</span>
           </div>
 
           <div className="ct-scroll" style={styles.list}>
@@ -381,6 +385,69 @@ function CommunityTracker() {
       {confirmDelete && (
         <ConfirmModal name={confirmDelete} inUseCount={issues.filter((i) => i.category === confirmDelete).length}
           onCancel={() => setConfirmDelete(null)} onConfirm={() => deleteCategory(confirmDelete)} />
+      )}
+    </div>
+  );
+}
+
+function CategoryDropdown({ categories, activeCategory, onSelect, byStatus, onManage }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+
+  useEffect(() => {
+    function onDocClick(e) {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
+    }
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, []);
+
+  const rows = ["All", ...categories];
+
+  return (
+    <div ref={ref} style={styles.dropdownWrap}>
+      <button
+        type="button"
+        style={styles.dropdownTrigger}
+        className="ct-btn"
+        onClick={() => setOpen((o) => !o)}
+      >
+        <span>{activeCategory === "All" ? "All categories" : activeCategory}</span>
+        <span style={styles.dropdownCaret}>{open ? "▲" : "▼"}</span>
+      </button>
+
+      {open && (
+        <div style={styles.dropdownPanel} className="ct-scroll">
+          <div style={styles.dropdownLegend}>
+            <span style={{ color: STATUS_COLOR.Pending.dot }}>● Pending</span>
+            <span style={{ color: STATUS_COLOR["In Progress"].dot }}>● In progress</span>
+            <span style={{ color: STATUS_COLOR.Resolved.dot }}>● Resolved</span>
+          </div>
+          {rows.map((cat) => {
+            const s = byStatus[cat] || { Pending: 0, "In Progress": 0, Resolved: 0 };
+            const active = activeCategory === cat;
+            return (
+              <div
+                key={cat}
+                className="ct-cat"
+                style={{ ...styles.dropdownRow, ...(active ? styles.dropdownRowActive : {}) }}
+                onClick={() => { onSelect(cat); setOpen(false); }}
+              >
+                <span style={styles.dropdownRowLabel}>{cat === "All" ? "All categories" : cat}</span>
+                <span style={styles.dropdownCounts}>
+                  <span style={{ ...styles.countPill, background: STATUS_COLOR.Pending.bg, color: STATUS_COLOR.Pending.fg }}>{s.Pending}</span>
+                  <span style={{ ...styles.countPill, background: STATUS_COLOR["In Progress"].bg, color: STATUS_COLOR["In Progress"].fg }}>{s["In Progress"]}</span>
+                  <span style={{ ...styles.countPill, background: STATUS_COLOR.Resolved.bg, color: STATUS_COLOR.Resolved.fg }}>{s.Resolved}</span>
+                </span>
+              </div>
+            );
+          })}
+          <div style={styles.dropdownFooter}>
+            <button style={styles.manageBtn} className="ct-btn" onClick={() => { onManage(); setOpen(false); }}>
+              Manage categories
+            </button>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -488,7 +555,7 @@ function CategoryModal({ categories, counts, onClose, onAdd, onRename, onRequest
                   <input style={{ ...styles.input, flex: 1 }} value={editValue} autoFocus
                     onChange={(e) => setEditValue(e.target.value)} onKeyDown={(e) => e.key === "Enter" && commitEdit()} onBlur={commitEdit} />
                 ) : (
-                  <span style={{ flex: 1 }}>{cat} <span style={{ color: "#9A9F97", fontSize: 13 }}>({counts[cat] || 0})</span></span>
+                  <span style={{ flex: 1 }}>{cat} <span style={{ color: "#9B9880", fontSize: 13 }}>({counts[cat] || 0})</span></span>
                 )}
                 <button style={styles.smallBtn} className="ct-btn" onClick={() => startEdit(cat)}>Rename</button>
                 <button style={{ ...styles.smallBtn, color: "#A8442F" }} className="ct-btn" onClick={() => onRequestDelete(cat)}>Delete</button>
@@ -518,7 +585,7 @@ function ConfirmModal({ name, inUseCount, onCancel, onConfirm }) {
       <div style={{ ...styles.modal, maxWidth: 380 }} onClick={(e) => e.stopPropagation()}>
         <div style={styles.modalBody}>
           <div style={{ fontFamily: "'Fraunces', serif", fontSize: 18, marginBottom: 8 }}>Delete "{name}"?</div>
-          <div style={{ color: "#5B6058", fontSize: 14, lineHeight: 1.5 }}>
+          <div style={{ color: "#5B5A48", fontSize: 14, lineHeight: 1.5 }}>
             {inUseCount > 0 ? `${inUseCount} request${inUseCount === 1 ? "" : "s"} currently use this category. They'll be moved to "Uncategorized".` : "This category isn't used by any requests yet."}
           </div>
         </div>
@@ -535,58 +602,65 @@ function ConfirmModal({ name, inUseCount, onCancel, onConfirm }) {
 }
 
 const styles = {
-  app: { fontFamily: "'Inter', -apple-system, sans-serif", background: "#F3F4F1", color: "#23272A", minHeight: "100vh", display: "flex", flexDirection: "column", position: "relative" },
-  header: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "20px 28px", background: "#FFFFFF", borderBottom: "1px solid #E7E9E3", flexWrap: "wrap", gap: 12 },
-  eyebrow: { fontSize: 12, letterSpacing: 0.3, color: "#8A8F87", marginBottom: 2 },
-  h1: { fontFamily: "'Fraunces', serif", fontWeight: 600, fontSize: 26, margin: 0, color: "#1A3A37" },
+  app: { fontFamily: "'Inter', -apple-system, sans-serif", background: "#F7F4EC", color: "#26291F", minHeight: "100vh", display: "flex", flexDirection: "column", position: "relative" },
+  header: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "20px 28px", background: "#FFFFFF", borderBottom: "1px solid #E9E2CF", flexWrap: "wrap", gap: 12 },
+  eyebrow: { fontSize: 12, letterSpacing: 0.3, color: "#8C8A73", marginBottom: 2 },
+  h1: { fontFamily: "'Fraunces', serif", fontWeight: 600, fontSize: 26, margin: 0, color: "#173C2C" },
   headerStats: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", justifyContent: "flex-end" },
-  statChip: { background: "#F3F4F1", borderRadius: 8, padding: "8px 14px", fontSize: 13, color: "#5B6058" },
-  primaryBtn: { background: "#1F4E4A", color: "#FFFFFF", border: "none", borderRadius: 8, padding: "10px 16px", fontSize: 14, fontWeight: 500, cursor: "pointer" },
-  secondaryBtn: { background: "#FFFFFF", color: "#23272A", border: "1px solid #D8DBD3", borderRadius: 8, padding: "10px 16px", fontSize: 14, fontWeight: 500, cursor: "pointer" },
-  smallBtn: { background: "transparent", color: "#5B6058", border: "1px solid #D8DBD3", borderRadius: 6, padding: "5px 10px", fontSize: 12, cursor: "pointer" },
+  statChip: { background: "#F1EEE0", borderRadius: 8, padding: "8px 14px", fontSize: 13, color: "#5B5A48" },
+  primaryBtn: { background: "#1B4332", color: "#FFFFFF", border: "none", borderRadius: 8, padding: "10px 16px", fontSize: 14, fontWeight: 500, cursor: "pointer" },
+  secondaryBtn: { background: "#FFFFFF", color: "#26291F", border: "1px solid #DCD5BE", borderRadius: 8, padding: "10px 16px", fontSize: 14, fontWeight: 500, cursor: "pointer" },
+  smallBtn: { background: "transparent", color: "#5B5A48", border: "1px solid #DCD5BE", borderRadius: 6, padding: "5px 10px", fontSize: 12, cursor: "pointer" },
   body: { display: "flex", flex: 1, minHeight: 520 },
-  sidebar: { width: 230, background: "#FFFFFF", borderRight: "1px solid #E7E9E3", padding: "16px 12px", display: "flex", flexDirection: "column" },
-  sidebarLabel: { fontSize: 11, textTransform: "uppercase", letterSpacing: 0.6, color: "#A3A89B", padding: "14px 10px 6px" },
-  catList: { flex: 1, overflowY: "auto" },
-  catRow: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 10px", borderRadius: 8, fontSize: 14, cursor: "pointer", color: "#3A3E38" },
-  catRowActive: { background: "#E4EDEB", color: "#1A3A37", fontWeight: 500 },
-  catCount: { fontSize: 12, color: "#9A9F97" },
-  manageBtn: { marginTop: 12, background: "transparent", border: "1px dashed #C9CDC2", borderRadius: 8, padding: "9px 10px", fontSize: 13, color: "#5B6058", cursor: "pointer" },
+  manageBtn: { marginTop: 4, width: "100%", background: "transparent", border: "1px dashed #C9BF9E", borderRadius: 8, padding: "9px 10px", fontSize: 13, color: "#5B5A48", cursor: "pointer" },
   main: { flex: 1, padding: "18px 24px", display: "flex", flexDirection: "column", minWidth: 0 },
+  mainFull: { flex: 1, padding: "18px 24px", display: "flex", flexDirection: "column", minWidth: 0, width: "100%" },
   filterRow: { display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap", alignItems: "center" },
-  search: { flex: "1 1 220px", padding: "9px 12px", borderRadius: 8, border: "1px solid #D8DBD3", fontSize: 14, background: "#FFFFFF" },
-  select: { padding: "9px 10px", borderRadius: 8, border: "1px solid #D8DBD3", fontSize: 13, background: "#FFFFFF", color: "#3A3E38" },
-  statusTabs: { display: "flex", gap: 4, background: "#EDEEEA", borderRadius: 8, padding: 3 },
-  statusTab: { padding: "7px 12px", borderRadius: 6, fontSize: 13, cursor: "pointer", color: "#5B6058" },
-  statusTabActive: { background: "#FFFFFF", color: "#1A3A37", fontWeight: 500, boxShadow: "0 1px 2px rgba(0,0,0,0.06)" },
-  listHeaderRow: { display: "flex", justifyContent: "space-between", fontSize: 13, fontWeight: 500, color: "#5B6058", padding: "0 4px 8px", borderBottom: "1px solid #E7E9E3" },
+  search: { flex: "1 1 220px", padding: "9px 12px", borderRadius: 8, border: "1px solid #DCD5BE", fontSize: 14, background: "#FFFFFF" },
+  select: { padding: "9px 10px", borderRadius: 8, border: "1px solid #DCD5BE", fontSize: 13, background: "#FFFFFF", color: "#3A3E38" },
+  statusTabs: { display: "flex", gap: 4, background: "#F1EEE0", borderRadius: 8, padding: 3 },
+  statusTab: { padding: "7px 12px", borderRadius: 6, fontSize: 13, cursor: "pointer", color: "#5B5A48" },
+  statusTabActive: { background: "#FFFFFF", color: "#173C2C", fontWeight: 500, boxShadow: "0 1px 2px rgba(0,0,0,0.06)" },
+  listHeaderRow: { display: "flex", justifyContent: "space-between", fontSize: 13, fontWeight: 500, color: "#5B5A48", padding: "0 4px 8px", borderBottom: "1px solid #E9E2CF" },
   list: { flex: 1, overflowY: "auto" },
-  row: { display: "flex", alignItems: "center", gap: 12, padding: "13px 8px", borderBottom: "1px solid #EDEEEA", cursor: "pointer" },
+  row: { display: "flex", alignItems: "center", gap: 12, padding: "13px 8px", borderBottom: "1px solid #F1EEE0", cursor: "pointer" },
   statusDot: { width: 8, height: 8, borderRadius: "50%", flexShrink: 0 },
   rowMain: { flex: 1, minWidth: 0 },
-  rowTitle: { fontSize: 14.5, color: "#23272A", marginBottom: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
-  rowMeta: { fontSize: 12.5, color: "#9A9F97" },
+  rowTitle: { fontSize: 14.5, color: "#26291F", marginBottom: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  rowMeta: { fontSize: 12.5, color: "#9B9880" },
   statusBadge: { fontSize: 12, fontWeight: 500, padding: "4px 10px", borderRadius: 20, flexShrink: 0 },
   empty: { padding: "60px 20px", textAlign: "center" },
-  importBanner: { background: "#E4EDEB", color: "#1A3A37", fontSize: 13, padding: "8px 24px", borderBottom: "1px solid #E7E9E3" },
+  importBanner: { background: "#E1EAE4", color: "#173C2C", fontSize: 13, padding: "8px 24px", borderBottom: "1px solid #E9E2CF" },
   overlay: { position: "fixed", inset: 0, background: "rgba(20, 24, 22, 0.4)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 20, padding: 16 },
   modal: { background: "#FFFFFF", borderRadius: 14, width: "100%", maxWidth: 460, maxHeight: "90%", display: "flex", flexDirection: "column", overflow: "hidden" },
-  modalHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "16px 20px", borderBottom: "1px solid #EDEEEA" },
-  modalTitle: { fontFamily: "'Fraunces', serif", fontSize: 18, fontWeight: 600, color: "#1A3A37" },
-  iconBtn: { background: "transparent", border: "none", fontSize: 14, color: "#9A9F97", cursor: "pointer" },
+  modalHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "16px 20px", borderBottom: "1px solid #F1EEE0" },
+  modalTitle: { fontFamily: "'Fraunces', serif", fontSize: 18, fontWeight: 600, color: "#173C2C" },
+  iconBtn: { background: "transparent", border: "none", fontSize: 14, color: "#9B9880", cursor: "pointer" },
   modalBody: { padding: "18px 20px", overflowY: "auto" },
-  label: { display: "block", fontSize: 12.5, fontWeight: 500, color: "#5B6058", marginBottom: 6, marginTop: 14 },
-  input: { width: "100%", padding: "9px 11px", borderRadius: 8, border: "1px solid #D8DBD3", fontSize: 14, color: "#23272A", background: "#FFFFFF" },
-  textarea: { width: "100%", padding: "9px 11px", borderRadius: 8, border: "1px solid #D8DBD3", fontSize: 14, color: "#23272A", resize: "vertical", fontFamily: "'Inter', sans-serif" },
+  label: { display: "block", fontSize: 12.5, fontWeight: 500, color: "#5B5A48", marginBottom: 6, marginTop: 14 },
+  input: { width: "100%", padding: "9px 11px", borderRadius: 8, border: "1px solid #DCD5BE", fontSize: 14, color: "#26291F", background: "#FFFFFF" },
+  textarea: { width: "100%", padding: "9px 11px", borderRadius: 8, border: "1px solid #DCD5BE", fontSize: 14, color: "#26291F", resize: "vertical", fontFamily: "'Inter', sans-serif" },
   fieldGrid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 },
   fieldError: { color: "#A8442F", fontSize: 12.5, marginTop: 6 },
   quickStatusRow: { display: "flex", gap: 8, marginTop: 18 },
-  quickStatusBtn: { flex: 1, padding: "8px 6px", borderRadius: 8, border: "1px solid #D8DBD3", background: "#FFFFFF", fontSize: 12.5, color: "#5B6058", cursor: "pointer" },
-  quickStatusBtnActive: { background: "#1F4E4A", borderColor: "#1F4E4A", color: "#FFFFFF" },
-  modalFooter: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 20px", borderTop: "1px solid #EDEEEA" },
+  quickStatusBtn: { flex: 1, padding: "8px 6px", borderRadius: 8, border: "1px solid #DCD5BE", background: "#FFFFFF", fontSize: 12.5, color: "#5B5A48", cursor: "pointer" },
+  quickStatusBtnActive: { background: "#1B4332", borderColor: "#1B4332", color: "#FFFFFF" },
+  modalFooter: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 20px", borderTop: "1px solid #F1EEE0" },
   dangerText: { background: "transparent", border: "none", color: "#A8442F", fontSize: 13.5, cursor: "pointer" },
   catManageList: { display: "flex", flexDirection: "column", gap: 6, marginBottom: 6, maxHeight: 260, overflowY: "auto" },
   catManageRow: { display: "flex", alignItems: "center", gap: 8, padding: "6px 2px" },
+
+  dropdownWrap: { position: "relative" },
+  dropdownTrigger: { display: "flex", alignItems: "center", gap: 10, background: "#FFFFFF", border: "1px solid #DCD5BE", borderRadius: 8, padding: "9px 14px", fontSize: 14, fontWeight: 500, color: "#173C2C", cursor: "pointer", minWidth: 200, justifyContent: "space-between" },
+  dropdownCaret: { fontSize: 10, color: "#9B9880" },
+  dropdownPanel: { position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 15, background: "#FFFFFF", border: "1px solid #E9E2CF", borderRadius: 10, boxShadow: "0 8px 24px rgba(23,60,44,0.12)", width: 340, maxHeight: 380, overflowY: "auto", padding: 8 },
+  dropdownLegend: { display: "flex", gap: 12, fontSize: 11.5, color: "#5B5A48", padding: "4px 8px 8px", borderBottom: "1px solid #F1EEE0", marginBottom: 4 },
+  dropdownRow: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 8px", borderRadius: 8, cursor: "pointer", gap: 10 },
+  dropdownRowActive: { background: "#E1EAE4" },
+  dropdownRowLabel: { fontSize: 13.5, color: "#26291F", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  dropdownCounts: { display: "flex", gap: 5, flexShrink: 0 },
+  countPill: { minWidth: 22, textAlign: "center", fontSize: 11.5, fontWeight: 600, padding: "2px 6px", borderRadius: 20 },
+  dropdownFooter: { paddingTop: 6, marginTop: 4, borderTop: "1px solid #F1EEE0" },
 };
 
 const root = ReactDOM.createRoot(document.getElementById("root"));
