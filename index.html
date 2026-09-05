@@ -1,0 +1,1171 @@
+import React, { useState, useEffect, useMemo, useRef } from "react";
+
+const DEFAULT_CATEGORIES = [
+  "Administrative",
+  "Activities",
+  "Clinical",
+  "Dining",
+  "Maintenance",
+  "Housekeeping",
+  "AL",
+  "MC",
+  "Building 1",
+  "Building 2",
+  "Building 3",
+  "Building 4",
+  "Building 5",
+];
+
+const REQUESTER_TYPES = [
+  "Team Member",
+  "Guest",
+  "Family Member",
+  "Vendor",
+  "Regional Team Member",
+];
+
+const STATUSES = ["Pending", "In Progress", "Resolved"];
+
+const STORAGE_KEY = "tracker-data";
+
+function uid() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+
+function timeAgo(iso) {
+  const then = new Date(iso).getTime();
+  const diff = Math.max(0, Date.now() - then);
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return mins + "m ago";
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return hrs + "h ago";
+  const days = Math.floor(hrs / 24);
+  if (days < 30) return days + "d ago";
+  return new Date(iso).toLocaleDateString();
+}
+
+const STATUS_COLOR = {
+  Pending: { bg: "#FBEEDD", fg: "#8A4E11", dot: "#C97A28" },
+  "In Progress": { bg: "#E4EDEB", fg: "#1F4E4A", dot: "#2E7A73" },
+  Resolved: { bg: "#E7F0E9", fg: "#33553F", dot: "#4F7A5D" },
+};
+
+export default function CommunityTracker() {
+  const [categories, setCategories] = useState(DEFAULT_CATEGORIES);
+  const [issues, setIssues] = useState([]);
+  const [loaded, setLoaded] = useState(false);
+  const [saveError, setSaveError] = useState(false);
+
+  const [activeCategory, setActiveCategory] = useState("All");
+  const [activeStatus, setActiveStatus] = useState("All");
+  const [activeRequester, setActiveRequester] = useState("All");
+  const [search, setSearch] = useState("");
+
+  const [issueModal, setIssueModal] = useState(null); // { mode: 'new'|'edit', issue }
+  const [catModal, setCatModal] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(null); // category name
+
+  const firstLoad = useRef(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await window.storage.get(STORAGE_KEY, false);
+        if (!cancelled && res && res.value) {
+          const parsed = JSON.parse(res.value);
+          if (Array.isArray(parsed.categories) && parsed.categories.length) {
+            setCategories(parsed.categories);
+          }
+          if (Array.isArray(parsed.issues)) {
+            setIssues(parsed.issues);
+          }
+        }
+      } catch (e) {
+        // no saved data yet, keep defaults
+      } finally {
+        if (!cancelled) setLoaded(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!loaded) return;
+    if (firstLoad.current) {
+      firstLoad.current = false;
+      return;
+    }
+    (async () => {
+      try {
+        const result = await window.storage.set(
+          STORAGE_KEY,
+          JSON.stringify({ categories, issues }),
+          false
+        );
+        setSaveError(!result);
+      } catch (e) {
+        setSaveError(true);
+      }
+    })();
+  }, [categories, issues, loaded]);
+
+  const counts = useMemo(() => {
+    const c = { All: issues.length };
+    for (const cat of categories) c[cat] = 0;
+    for (const iss of issues) {
+      if (c[iss.category] !== undefined) c[iss.category]++;
+    }
+    const pending = issues.filter((i) => i.status !== "Resolved").length;
+    return { byCategory: c, pending, total: issues.length };
+  }, [issues, categories]);
+
+  const filtered = useMemo(() => {
+    return issues
+      .filter((i) => activeCategory === "All" || i.category === activeCategory)
+      .filter((i) => activeStatus === "All" || i.status === activeStatus)
+      .filter(
+        (i) => activeRequester === "All" || i.requesterType === activeRequester
+      )
+      .filter((i) => {
+        if (!search.trim()) return true;
+        const q = search.trim().toLowerCase();
+        return (
+          i.title.toLowerCase().includes(q) ||
+          (i.description || "").toLowerCase().includes(q) ||
+          (i.requesterName || "").toLowerCase().includes(q) ||
+          (i.location || "").toLowerCase().includes(q)
+        );
+      })
+      .sort((a, b) => {
+        const rank = { Pending: 0, "In Progress": 1, Resolved: 2 };
+        if (rank[a.status] !== rank[b.status]) return rank[a.status] - rank[b.status];
+        return new Date(b.updatedAt) - new Date(a.updatedAt);
+      });
+  }, [issues, activeCategory, activeStatus, activeRequester, search]);
+
+  function openNewIssue() {
+    setIssueModal({
+      mode: "new",
+      issue: {
+        id: uid(),
+        title: "",
+        description: "",
+        requesterType: REQUESTER_TYPES[0],
+        requesterName: "",
+        location: "",
+        category: activeCategory !== "All" ? activeCategory : categories[0] || "",
+        status: "Pending",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+    });
+  }
+
+  function openEditIssue(issue) {
+    setIssueModal({ mode: "edit", issue: { ...issue } });
+  }
+
+  function saveIssue(issue) {
+    const now = new Date().toISOString();
+    setIssues((prev) => {
+      const exists = prev.some((i) => i.id === issue.id);
+      if (exists) {
+        return prev.map((i) =>
+          i.id === issue.id ? { ...issue, updatedAt: now } : i
+        );
+      }
+      return [{ ...issue, createdAt: now, updatedAt: now }, ...prev];
+    });
+    setIssueModal(null);
+  }
+
+  function deleteIssue(id) {
+    setIssues((prev) => prev.filter((i) => i.id !== id));
+    setIssueModal(null);
+  }
+
+  function setIssueStatus(id, status) {
+    setIssues((prev) =>
+      prev.map((i) =>
+        i.id === id ? { ...i, status, updatedAt: new Date().toISOString() } : i
+      )
+    );
+  }
+
+  function addCategory(name) {
+    const trimmed = name.trim();
+    if (!trimmed || categories.includes(trimmed)) return false;
+    setCategories((prev) => [...prev, trimmed]);
+    return true;
+  }
+
+  function renameCategory(oldName, newName) {
+    const trimmed = newName.trim();
+    if (!trimmed || trimmed === oldName) return;
+    if (categories.includes(trimmed)) return;
+    setCategories((prev) => prev.map((c) => (c === oldName ? trimmed : c)));
+    setIssues((prev) =>
+      prev.map((i) => (i.category === oldName ? { ...i, category: trimmed } : i))
+    );
+    if (activeCategory === oldName) setActiveCategory(trimmed);
+  }
+
+  function deleteCategory(name) {
+    const inUse = issues.some((i) => i.category === name);
+    setCategories((prev) => prev.filter((c) => c !== name));
+    if (inUse) {
+      if (!categories.includes("Uncategorized")) {
+        setCategories((prev) => [...prev.filter((c) => c !== name), "Uncategorized"]);
+      }
+      setIssues((prev) =>
+        prev.map((i) => (i.category === name ? { ...i, category: "Uncategorized" } : i))
+      );
+    }
+  const fileInputRef = useRef(null);
+  const [importMsg, setImportMsg] = useState("");
+
+  function exportData() {
+    const payload = {
+      exportedAt: new Date().toISOString(),
+      categories,
+      issues,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const stamp = new Date().toISOString().slice(0, 10);
+    a.href = url;
+    a.download = `needs-tracker-backup-${stamp}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  function triggerImport() {
+    setImportMsg("");
+    fileInputRef.current?.click();
+  }
+
+  function handleImportFile(e) {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const parsed = JSON.parse(reader.result);
+        if (!Array.isArray(parsed.issues) || !Array.isArray(parsed.categories)) {
+          throw new Error("bad shape");
+        }
+        setCategories(parsed.categories);
+        setIssues(parsed.issues);
+        setImportMsg(
+          `Imported ${parsed.issues.length} request${
+            parsed.issues.length === 1 ? "" : "s"
+          } and ${parsed.categories.length} categories.`
+        );
+      } catch (err) {
+        setImportMsg("That file doesn't look like a Needs Tracker backup.");
+      }
+    };
+    reader.onerror = () => setImportMsg("Couldn't read that file.");
+    reader.readAsText(file);
+  }
+
+  return (
+    <div style={styles.app}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Inter:wght@400;500;600&display=swap');
+        * { box-sizing: border-box; }
+        .ct-scroll::-webkit-scrollbar { width: 8px; }
+        .ct-scroll::-webkit-scrollbar-thumb { background: #D6D9D3; border-radius: 8px; }
+        .ct-row:hover { background: #F6F5F1 !important; }
+        .ct-cat:hover { background: #EDEEEA !important; }
+        .ct-btn:hover { filter: brightness(0.97); }
+        input, textarea, select { font-family: 'Inter', sans-serif; }
+      `}</style>
+
+      <header style={styles.header}>
+        <div>
+          <div style={styles.eyebrow}>Community operations</div>
+          <h1 style={styles.h1}>Needs Tracker</h1>
+        </div>
+        <div style={styles.headerStats}>
+          <div style={styles.statChip}>
+            <span style={{ fontWeight: 600 }}>{counts.pending}</span> open
+          </div>
+          <div style={styles.statChip}>
+            <span style={{ fontWeight: 600 }}>{counts.total}</span> total
+          </div>
+          <button style={styles.secondaryBtn} className="ct-btn" onClick={triggerImport}>
+            Import
+          </button>
+          <button style={styles.secondaryBtn} className="ct-btn" onClick={exportData}>
+            Export
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="application/json"
+            style={{ display: "none" }}
+            onChange={handleImportFile}
+          />
+          <button style={styles.primaryBtn} className="ct-btn" onClick={openNewIssue}>
+            + New request
+          </button>
+        </div>
+      </header>
+      {importMsg && <div style={styles.importBanner}>{importMsg}</div>}
+
+      <div style={styles.body}>
+        <aside style={styles.sidebar}>
+          <div
+            className="ct-cat"
+            style={{
+              ...styles.catRow,
+              ...(activeCategory === "All" ? styles.catRowActive : {}),
+            }}
+            onClick={() => setActiveCategory("All")}
+          >
+            <span>All requests</span>
+            <span style={styles.catCount}>{counts.byCategory.All}</span>
+          </div>
+          <div style={styles.sidebarLabel}>Categories</div>
+          <div className="ct-scroll" style={styles.catList}>
+            {categories.map((cat) => (
+              <div
+                key={cat}
+                className="ct-cat"
+                style={{
+                  ...styles.catRow,
+                  ...(activeCategory === cat ? styles.catRowActive : {}),
+                }}
+                onClick={() => setActiveCategory(cat)}
+              >
+                <span>{cat}</span>
+                <span style={styles.catCount}>{counts.byCategory[cat] || 0}</span>
+              </div>
+            ))}
+          </div>
+          <button
+            style={styles.manageBtn}
+            className="ct-btn"
+            onClick={() => setCatModal(true)}
+          >
+            Manage categories
+          </button>
+        </aside>
+
+        <main style={styles.main}>
+          <div style={styles.filterRow}>
+            <input
+              style={styles.search}
+              placeholder="Search requests..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+            <select
+              style={styles.select}
+              value={activeRequester}
+              onChange={(e) => setActiveRequester(e.target.value)}
+            >
+              <option value="All">All requesters</option>
+              {REQUESTER_TYPES.map((r) => (
+                <option key={r} value={r}>
+                  {r}
+                </option>
+              ))}
+            </select>
+            <div style={styles.statusTabs}>
+              {["All", ...STATUSES].map((s) => (
+                <div
+                  key={s}
+                  onClick={() => setActiveStatus(s)}
+                  style={{
+                    ...styles.statusTab,
+                    ...(activeStatus === s ? styles.statusTabActive : {}),
+                  }}
+                >
+                  {s}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div style={styles.listHeaderRow}>
+            <span>{activeCategory === "All" ? "All requests" : activeCategory}</span>
+            <span style={{ color: "#8A8F87", fontWeight: 400 }}>
+              {filtered.length} {filtered.length === 1 ? "item" : "items"}
+            </span>
+          </div>
+
+          <div className="ct-scroll" style={styles.list}>
+            {filtered.length === 0 && (
+              <div style={styles.empty}>
+                <div style={{ fontFamily: "'Fraunces', serif", fontSize: 18, marginBottom: 6 }}>
+                  Nothing here
+                </div>
+                <div style={{ color: "#7B807A", fontSize: 14 }}>
+                  Log a new request to get started, or adjust your filters.
+                </div>
+              </div>
+            )}
+            {filtered.map((issue) => {
+              const sc = STATUS_COLOR[issue.status];
+              return (
+                <div
+                  key={issue.id}
+                  className="ct-row"
+                  style={styles.row}
+                  onClick={() => openEditIssue(issue)}
+                >
+                  <span style={{ ...styles.statusDot, background: sc.dot }} />
+                  <div style={styles.rowMain}>
+                    <div style={styles.rowTitle}>{issue.title || "Untitled request"}</div>
+                    <div style={styles.rowMeta}>
+                      {issue.requesterType}
+                      {issue.requesterName ? " · " + issue.requesterName : ""} ·{" "}
+                      {issue.category}
+                      {issue.location ? " · " + issue.location : ""} · {timeAgo(issue.updatedAt)}
+                    </div>
+                  </div>
+                  <span style={{ ...styles.statusBadge, background: sc.bg, color: sc.fg }}>
+                    {issue.status}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </main>
+      </div>
+
+      {saveError && (
+        <div style={styles.saveError}>
+          Changes aren't saving right now — keep working, but note anything important
+          elsewhere until this clears.
+        </div>
+      )}
+
+      {issueModal && (
+        <IssueModal
+          mode={issueModal.mode}
+          issue={issueModal.issue}
+          categories={categories}
+          onClose={() => setIssueModal(null)}
+          onSave={saveIssue}
+          onDelete={deleteIssue}
+          onStatus={setIssueStatus}
+        />
+      )}
+
+      {catModal && (
+        <CategoryModal
+          categories={categories}
+          counts={counts.byCategory}
+          onClose={() => setCatModal(false)}
+          onAdd={addCategory}
+          onRename={renameCategory}
+          onRequestDelete={(name) => setConfirmDelete(name)}
+        />
+      )}
+
+      {confirmDelete && (
+        <ConfirmModal
+          name={confirmDelete}
+          inUseCount={issues.filter((i) => i.category === confirmDelete).length}
+          onCancel={() => setConfirmDelete(null)}
+          onConfirm={() => deleteCategory(confirmDelete)}
+        />
+      )}
+    </div>
+  );
+}
+
+function IssueModal({ mode, issue, categories, onClose, onSave, onDelete, onStatus }) {
+  const [form, setForm] = useState(issue);
+  const [error, setError] = useState("");
+
+  function update(field, value) {
+    setForm((f) => ({ ...f, [field]: value }));
+  }
+
+  function handleSave() {
+    if (!form.title.trim()) {
+      setError("Give this request a short title first.");
+      return;
+    }
+    onSave(form);
+  }
+
+  return (
+    <div style={styles.overlay} onClick={onClose}>
+      <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
+        <div style={styles.modalHeader}>
+          <div style={styles.modalTitle}>
+            {mode === "new" ? "New request" : "Edit request"}
+          </div>
+          <button style={styles.iconBtn} onClick={onClose}>
+            ✕
+          </button>
+        </div>
+
+        <div style={styles.modalBody}>
+          <label style={styles.label}>Title</label>
+          <input
+            style={styles.input}
+            value={form.title}
+            placeholder="e.g. Leaking faucet in Building 3, room 214"
+            onChange={(e) => update("title", e.target.value)}
+            autoFocus
+          />
+          {error && <div style={styles.fieldError}>{error}</div>}
+
+          <label style={styles.label}>Details</label>
+          <textarea
+            style={styles.textarea}
+            rows={3}
+            value={form.description}
+            placeholder="Any additional detail worth capturing"
+            onChange={(e) => update("description", e.target.value)}
+          />
+
+          <div style={styles.fieldGrid}>
+            <div>
+              <label style={styles.label}>Requester type</label>
+              <select
+                style={styles.input}
+                value={form.requesterType}
+                onChange={(e) => update("requesterType", e.target.value)}
+              >
+                {REQUESTER_TYPES.map((r) => (
+                  <option key={r} value={r}>
+                    {r}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label style={styles.label}>Requester name</label>
+              <input
+                style={styles.input}
+                value={form.requesterName || ""}
+                placeholder="Optional"
+                onChange={(e) => update("requesterName", e.target.value)}
+              />
+            </div>
+          </div>
+
+          <label style={styles.label}>Location</label>
+          <input
+            style={styles.input}
+            value={form.location || ""}
+            placeholder="e.g. Building 3, Apartment 214 or Main dining room"
+            onChange={(e) => update("location", e.target.value)}
+          />
+
+          <div style={styles.fieldGrid}>
+            <div>
+              <label style={styles.label}>Category</label>
+              <select
+                style={styles.input}
+                value={form.category}
+                onChange={(e) => update("category", e.target.value)}
+              >
+                {categories.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label style={styles.label}>Status</label>
+              <select
+                style={styles.input}
+                value={form.status}
+                onChange={(e) => update("status", e.target.value)}
+              >
+                {STATUSES.map((s) => (
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {mode === "edit" && (
+            <div style={styles.quickStatusRow}>
+              {STATUSES.map((s) => (
+                <button
+                  key={s}
+                  className="ct-btn"
+                  style={{
+                    ...styles.quickStatusBtn,
+                    ...(form.status === s ? styles.quickStatusBtnActive : {}),
+                  }}
+                  onClick={() => {
+                    update("status", s);
+                    onStatus(form.id, s);
+                  }}
+                >
+                  Mark {s}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div style={styles.modalFooter}>
+          {mode === "edit" ? (
+            <button
+              style={styles.dangerText}
+              onClick={() => onDelete(form.id)}
+            >
+              Delete request
+            </button>
+          ) : (
+            <span />
+          )}
+          <div style={{ display: "flex", gap: 8 }}>
+            <button style={styles.secondaryBtn} className="ct-btn" onClick={onClose}>
+              Cancel
+            </button>
+            <button style={styles.primaryBtn} className="ct-btn" onClick={handleSave}>
+              {mode === "new" ? "Add request" : "Save changes"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CategoryModal({ categories, counts, onClose, onAdd, onRename, onRequestDelete }) {
+  const [newCat, setNewCat] = useState("");
+  const [editing, setEditing] = useState(null);
+  const [editValue, setEditValue] = useState("");
+  const [error, setError] = useState("");
+
+  function handleAdd() {
+    const ok = onAdd(newCat);
+    if (!ok) {
+      setError(
+        !newCat.trim() ? "Enter a category name first." : "That category already exists."
+      );
+      return;
+    }
+    setNewCat("");
+    setError("");
+  }
+
+  function startEdit(cat) {
+    setEditing(cat);
+    setEditValue(cat);
+  }
+
+  function commitEdit() {
+    if (editValue.trim() && editValue.trim() !== editing) {
+      onRename(editing, editValue);
+    }
+    setEditing(null);
+  }
+
+  return (
+    <div style={styles.overlay} onClick={onClose}>
+      <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
+        <div style={styles.modalHeader}>
+          <div style={styles.modalTitle}>Manage categories</div>
+          <button style={styles.iconBtn} onClick={onClose}>
+            ✕
+          </button>
+        </div>
+
+        <div style={styles.modalBody}>
+          <div style={styles.catManageList}>
+            {categories.map((cat) => (
+              <div key={cat} style={styles.catManageRow}>
+                {editing === cat ? (
+                  <input
+                    style={{ ...styles.input, flex: 1 }}
+                    value={editValue}
+                    autoFocus
+                    onChange={(e) => setEditValue(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && commitEdit()}
+                    onBlur={commitEdit}
+                  />
+                ) : (
+                  <span style={{ flex: 1 }}>
+                    {cat}{" "}
+                    <span style={{ color: "#9A9F97", fontSize: 13 }}>
+                      ({counts[cat] || 0})
+                    </span>
+                  </span>
+                )}
+                <button style={styles.smallBtn} className="ct-btn" onClick={() => startEdit(cat)}>
+                  Rename
+                </button>
+                <button
+                  style={{ ...styles.smallBtn, color: "#A8442F" }}
+                  className="ct-btn"
+                  onClick={() => onRequestDelete(cat)}
+                >
+                  Delete
+                </button>
+              </div>
+            ))}
+          </div>
+
+          <label style={styles.label}>Add a category</label>
+          <div style={{ display: "flex", gap: 8 }}>
+            <input
+              style={{ ...styles.input, flex: 1 }}
+              value={newCat}
+              placeholder="e.g. Transportation"
+              onChange={(e) => {
+                setNewCat(e.target.value);
+                setError("");
+              }}
+              onKeyDown={(e) => e.key === "Enter" && handleAdd()}
+            />
+            <button style={styles.secondaryBtn} className="ct-btn" onClick={handleAdd}>
+              Add
+            </button>
+          </div>
+          {error && <div style={styles.fieldError}>{error}</div>}
+        </div>
+
+        <div style={styles.modalFooter}>
+          <span />
+          <button style={styles.primaryBtn} className="ct-btn" onClick={onClose}>
+            Done
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ConfirmModal({ name, inUseCount, onCancel, onConfirm }) {
+  return (
+    <div style={styles.overlay} onClick={onCancel}>
+      <div style={{ ...styles.modal, maxWidth: 380 }} onClick={(e) => e.stopPropagation()}>
+        <div style={styles.modalBody}>
+          <div style={{ fontFamily: "'Fraunces', serif", fontSize: 18, marginBottom: 8 }}>
+            Delete "{name}"?
+          </div>
+          <div style={{ color: "#5B6058", fontSize: 14, lineHeight: 1.5 }}>
+            {inUseCount > 0
+              ? `${inUseCount} request${inUseCount === 1 ? "" : "s"} currently use this category. They'll be moved to "Uncategorized".`
+              : "This category isn't used by any requests yet."}
+          </div>
+        </div>
+        <div style={styles.modalFooter}>
+          <span />
+          <div style={{ display: "flex", gap: 8 }}>
+            <button style={styles.secondaryBtn} className="ct-btn" onClick={onCancel}>
+              Cancel
+            </button>
+            <button
+              style={{ ...styles.primaryBtn, background: "#A8442F" }}
+              className="ct-btn"
+              onClick={onConfirm}
+            >
+              Delete category
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const styles = {
+  app: {
+    fontFamily: "'Inter', -apple-system, sans-serif",
+    background: "#F3F4F1",
+    color: "#23272A",
+    minHeight: 600,
+    display: "flex",
+    flexDirection: "column",
+    borderRadius: 12,
+    overflow: "hidden",
+    border: "1px solid #E1E3DD",
+    position: "relative",
+  },
+  header: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    padding: "20px 28px",
+    background: "#FFFFFF",
+    borderBottom: "1px solid #E7E9E3",
+  },
+  eyebrow: {
+    fontSize: 12,
+    letterSpacing: 0.3,
+    color: "#8A8F87",
+    marginBottom: 2,
+  },
+  h1: {
+    fontFamily: "'Fraunces', serif",
+    fontWeight: 600,
+    fontSize: 26,
+    margin: 0,
+    color: "#1A3A37",
+  },
+  headerStats: {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    flexWrap: "wrap",
+    justifyContent: "flex-end",
+  },
+  statChip: {
+    background: "#F3F4F1",
+    borderRadius: 8,
+    padding: "8px 14px",
+    fontSize: 13,
+    color: "#5B6058",
+  },
+  primaryBtn: {
+    background: "#1F4E4A",
+    color: "#FFFFFF",
+    border: "none",
+    borderRadius: 8,
+    padding: "10px 16px",
+    fontSize: 14,
+    fontWeight: 500,
+    cursor: "pointer",
+  },
+  secondaryBtn: {
+    background: "#FFFFFF",
+    color: "#23272A",
+    border: "1px solid #D8DBD3",
+    borderRadius: 8,
+    padding: "10px 16px",
+    fontSize: 14,
+    fontWeight: 500,
+    cursor: "pointer",
+  },
+  smallBtn: {
+    background: "transparent",
+    color: "#5B6058",
+    border: "1px solid #D8DBD3",
+    borderRadius: 6,
+    padding: "5px 10px",
+    fontSize: 12,
+    cursor: "pointer",
+  },
+  body: {
+    display: "flex",
+    flex: 1,
+    minHeight: 520,
+  },
+  sidebar: {
+    width: 230,
+    background: "#FFFFFF",
+    borderRight: "1px solid #E7E9E3",
+    padding: "16px 12px",
+    display: "flex",
+    flexDirection: "column",
+  },
+  sidebarLabel: {
+    fontSize: 11,
+    textTransform: "uppercase",
+    letterSpacing: 0.6,
+    color: "#A3A89B",
+    padding: "14px 10px 6px",
+  },
+  catList: {
+    flex: 1,
+    overflowY: "auto",
+  },
+  catRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    padding: "9px 10px",
+    borderRadius: 8,
+    fontSize: 14,
+    cursor: "pointer",
+    color: "#3A3E38",
+  },
+  catRowActive: {
+    background: "#E4EDEB",
+    color: "#1A3A37",
+    fontWeight: 500,
+  },
+  catCount: {
+    fontSize: 12,
+    color: "#9A9F97",
+  },
+  manageBtn: {
+    marginTop: 12,
+    background: "transparent",
+    border: "1px dashed #C9CDC2",
+    borderRadius: 8,
+    padding: "9px 10px",
+    fontSize: 13,
+    color: "#5B6058",
+    cursor: "pointer",
+  },
+  main: {
+    flex: 1,
+    padding: "18px 24px",
+    display: "flex",
+    flexDirection: "column",
+    minWidth: 0,
+  },
+  filterRow: {
+    display: "flex",
+    gap: 10,
+    marginBottom: 14,
+    flexWrap: "wrap",
+    alignItems: "center",
+  },
+  search: {
+    flex: "1 1 220px",
+    padding: "9px 12px",
+    borderRadius: 8,
+    border: "1px solid #D8DBD3",
+    fontSize: 14,
+    background: "#FFFFFF",
+  },
+  select: {
+    padding: "9px 10px",
+    borderRadius: 8,
+    border: "1px solid #D8DBD3",
+    fontSize: 13,
+    background: "#FFFFFF",
+    color: "#3A3E38",
+  },
+  statusTabs: {
+    display: "flex",
+    gap: 4,
+    background: "#EDEEEA",
+    borderRadius: 8,
+    padding: 3,
+  },
+  statusTab: {
+    padding: "7px 12px",
+    borderRadius: 6,
+    fontSize: 13,
+    cursor: "pointer",
+    color: "#5B6058",
+  },
+  statusTabActive: {
+    background: "#FFFFFF",
+    color: "#1A3A37",
+    fontWeight: 500,
+    boxShadow: "0 1px 2px rgba(0,0,0,0.06)",
+  },
+  listHeaderRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    fontSize: 13,
+    fontWeight: 500,
+    color: "#5B6058",
+    padding: "0 4px 8px",
+    borderBottom: "1px solid #E7E9E3",
+  },
+  list: {
+    flex: 1,
+    overflowY: "auto",
+  },
+  row: {
+    display: "flex",
+    alignItems: "center",
+    gap: 12,
+    padding: "13px 8px",
+    borderBottom: "1px solid #EDEEEA",
+    cursor: "pointer",
+  },
+  statusDot: {
+    width: 8,
+    height: 8,
+    borderRadius: "50%",
+    flexShrink: 0,
+  },
+  rowMain: {
+    flex: 1,
+    minWidth: 0,
+  },
+  rowTitle: {
+    fontSize: 14.5,
+    color: "#23272A",
+    marginBottom: 2,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+  },
+  rowMeta: {
+    fontSize: 12.5,
+    color: "#9A9F97",
+  },
+  statusBadge: {
+    fontSize: 12,
+    fontWeight: 500,
+    padding: "4px 10px",
+    borderRadius: 20,
+    flexShrink: 0,
+  },
+  empty: {
+    padding: "60px 20px",
+    textAlign: "center",
+  },
+  saveError: {
+    position: "absolute",
+    bottom: 12,
+    left: "50%",
+    transform: "translateX(-50%)",
+    background: "#F6E4DF",
+    color: "#7A3421",
+    fontSize: 12.5,
+    padding: "8px 14px",
+    borderRadius: 8,
+  },
+  importBanner: {
+    background: "#E4EDEB",
+    color: "#1A3A37",
+    fontSize: 13,
+    padding: "8px 24px",
+    borderBottom: "1px solid #E7E9E3",
+  },
+  overlay: {
+    position: "absolute",
+    inset: 0,
+    background: "rgba(20, 24, 22, 0.4)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 20,
+    padding: 16,
+  },
+  modal: {
+    background: "#FFFFFF",
+    borderRadius: 14,
+    width: "100%",
+    maxWidth: 460,
+    maxHeight: "90%",
+    display: "flex",
+    flexDirection: "column",
+    overflow: "hidden",
+  },
+  modalHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    padding: "16px 20px",
+    borderBottom: "1px solid #EDEEEA",
+  },
+  modalTitle: {
+    fontFamily: "'Fraunces', serif",
+    fontSize: 18,
+    fontWeight: 600,
+    color: "#1A3A37",
+  },
+  iconBtn: {
+    background: "transparent",
+    border: "none",
+    fontSize: 14,
+    color: "#9A9F97",
+    cursor: "pointer",
+  },
+  modalBody: {
+    padding: "18px 20px",
+    overflowY: "auto",
+  },
+  label: {
+    display: "block",
+    fontSize: 12.5,
+    fontWeight: 500,
+    color: "#5B6058",
+    marginBottom: 6,
+    marginTop: 14,
+  },
+  input: {
+    width: "100%",
+    padding: "9px 11px",
+    borderRadius: 8,
+    border: "1px solid #D8DBD3",
+    fontSize: 14,
+    color: "#23272A",
+    background: "#FFFFFF",
+  },
+  textarea: {
+    width: "100%",
+    padding: "9px 11px",
+    borderRadius: 8,
+    border: "1px solid #D8DBD3",
+    fontSize: 14,
+    color: "#23272A",
+    resize: "vertical",
+    fontFamily: "'Inter', sans-serif",
+  },
+  fieldGrid: {
+    display: "grid",
+    gridTemplateColumns: "1fr 1fr",
+    gap: 12,
+  },
+  fieldError: {
+    color: "#A8442F",
+    fontSize: 12.5,
+    marginTop: 6,
+  },
+  quickStatusRow: {
+    display: "flex",
+    gap: 8,
+    marginTop: 18,
+  },
+  quickStatusBtn: {
+    flex: 1,
+    padding: "8px 6px",
+    borderRadius: 8,
+    border: "1px solid #D8DBD3",
+    background: "#FFFFFF",
+    fontSize: 12.5,
+    color: "#5B6058",
+    cursor: "pointer",
+  },
+  quickStatusBtnActive: {
+    background: "#1F4E4A",
+    borderColor: "#1F4E4A",
+    color: "#FFFFFF",
+  },
+  modalFooter: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    padding: "14px 20px",
+    borderTop: "1px solid #EDEEEA",
+  },
+  dangerText: {
+    background: "transparent",
+    border: "none",
+    color: "#A8442F",
+    fontSize: 13.5,
+    cursor: "pointer",
+  },
+  catManageList: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 6,
+    marginBottom: 6,
+    maxHeight: 260,
+    overflowY: "auto",
+  },
+  catManageRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    padding: "6px 2px",
+  },
+};
