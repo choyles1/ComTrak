@@ -29,33 +29,49 @@
 <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 
 <script type="text/babel" data-type="module">
 const { useState, useEffect, useMemo, useRef } = React;
 
-// ---- CONFIGURE THIS ----
-const JSONBIN_BIN_ID = "6a9c3abada38895dfe3ce29c";
-const JSONBIN_MASTER_KEY = "$2a$10$JwcztX73dFpXkiluHwf/qekcfPcCX5eqqtEJRgYXenElipJBPxlvi";
-// -------------------------
-
-const JSONBIN_BASE = `https://api.jsonbin.io/v3/b/${JSONBIN_BIN_ID}`;
 const LOCAL_KEY = "needs-tracker-data";
+const CONFIG_KEY = "com-trak-config";
 
-async function fetchFromJsonBin() {
-  const res = await fetch(`${JSONBIN_BASE}/latest`, {
-    headers: { "X-Master-Key": JSONBIN_MASTER_KEY },
+function readConfig() {
+  try {
+    const raw = localStorage.getItem(CONFIG_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    return { binId: parsed.binId || "", masterKey: parsed.masterKey || "" };
+  } catch (e) {
+    return { binId: "", masterKey: "" };
+  }
+}
+
+function writeConfig(config) {
+  try {
+    localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
+  } catch (e) {}
+}
+
+function jsonBinBase(binId) {
+  return `https://api.jsonbin.io/v3/b/${binId}`;
+}
+
+async function fetchFromJsonBin(config) {
+  const res = await fetch(`${jsonBinBase(config.binId)}/latest`, {
+    headers: { "X-Master-Key": config.masterKey },
   });
-  if (!res.ok) throw new Error("jsonbin read failed");
+  if (!res.ok) throw new Error("jsonbin read failed: " + res.status);
   const data = await res.json();
   return data.record;
 }
 
-async function pushToJsonBin(payload) {
-  const res = await fetch(JSONBIN_BASE, {
+async function pushToJsonBin(config, payload) {
+  const res = await fetch(jsonBinBase(config.binId), {
     method: "PUT",
     headers: {
       "Content-Type": "application/json",
-      "X-Master-Key": JSONBIN_MASTER_KEY,
+      "X-Master-Key": config.masterKey,
     },
     body: JSON.stringify(payload),
   });
@@ -106,11 +122,247 @@ const STATUS_COLOR = {
   Resolved: { bg: "#E1EAE4", fg: "#1B4332", dot: "#2F6B4F" },
 };
 
+const STATUS_RGB = {
+  Pending: [192, 57, 43],
+  "In Progress": [163, 122, 12],
+  Resolved: [27, 67, 50],
+};
+
+function buildReportPdf(issues, meta) {
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: "pt", format: "letter", orientation: "landscape" });
+  const pageW = doc.internal.pageSize.getWidth();
+  const pageH = doc.internal.pageSize.getHeight();
+  const marginX = 40;
+  const marginBottom = 46;
+  const cols = [
+    { key: "category", label: "Category", x: marginX, w: 95 },
+    { key: "status", label: "Status", x: marginX + 100, w: 70 },
+    { key: "title", label: "Request", x: marginX + 175, w: 235 },
+    { key: "location", label: "Location", x: marginX + 415, w: 150 },
+    { key: "requester", label: "Requester", x: marginX + 570, w: 130 },
+  ];
+
+  function wrap(text, width, maxLines) {
+    const lines = doc.splitTextToSize(String(text || "—"), width);
+    if (lines.length <= maxLines) return lines;
+    const clipped = lines.slice(0, maxLines);
+    clipped[maxLines - 1] = clipped[maxLines - 1].replace(/.{3}$/, "...");
+    return clipped;
+  }
+
+  function drawHeader() {
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(18);
+    doc.setTextColor(27, 67, 50);
+    doc.text("Com Trak Report", marginX, 46);
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9.5);
+    doc.setTextColor(90, 90, 80);
+    doc.text(`Generated ${meta.generatedAt}`, marginX, 62);
+    doc.text(meta.filterLine, marginX, 76);
+
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(9.5);
+    let sx = pageW - marginX - 260;
+    const chips = [
+      ["Pending", meta.counts.Pending, STATUS_RGB.Pending],
+      ["In progress", meta.counts["In Progress"], STATUS_RGB["In Progress"]],
+      ["Resolved", meta.counts.Resolved, STATUS_RGB.Resolved],
+    ];
+    chips.forEach(([label, count, rgb]) => {
+      doc.setTextColor(...rgb);
+      doc.text(`${label}: ${count}`, sx, 62);
+      sx += 90;
+    });
+
+    doc.setDrawColor(220, 213, 190);
+    doc.line(marginX, 88, pageW - marginX, 88);
+
+    let y = 106;
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(9.5);
+    doc.setTextColor(90, 90, 80);
+    cols.forEach((c) => doc.text(c.label.toUpperCase(), c.x, y));
+    doc.setDrawColor(220, 213, 190);
+    doc.line(marginX, y + 6, pageW - marginX, y + 6);
+    return y + 22;
+  }
+
+  function drawFooter(pageNum, pageCount) {
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(8.5);
+    doc.setTextColor(140, 140, 125);
+    doc.text("Com Trak — community operations", marginX, pageH - 20);
+    doc.text(`Page ${pageNum} of ${pageCount}`, pageW - marginX - 60, pageH - 20);
+  }
+
+  let y = drawHeader();
+  const rowsPerPageEstimate = Math.floor((pageH - marginBottom - 110) / 30);
+  const totalPages = Math.max(1, Math.ceil(issues.length / rowsPerPageEstimate) || 1);
+  let pageNum = 1;
+
+  if (issues.length === 0) {
+    doc.setFont("helvetica", "italic");
+    doc.setFontSize(11);
+    doc.setTextColor(120, 120, 105);
+    doc.text("No requests match the current filters.", marginX, y + 10);
+  }
+
+  issues.forEach((issue) => {
+    const titleLines = wrap(issue.title || "Untitled request", cols[2].w - 6, 2);
+    const locationLines = wrap(issue.location || "—", cols[3].w - 6, 2);
+    const lineCount = Math.max(titleLines.length, locationLines.length, 1);
+    const rowH = 14 + lineCount * 11;
+
+    if (y + rowH > pageH - marginBottom) {
+      drawFooter(pageNum, totalPages);
+      doc.addPage();
+      pageNum++;
+      y = drawHeader();
+    }
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9.5);
+    doc.setTextColor(38, 41, 31);
+    doc.text(wrap(issue.category, cols[0].w - 6, 2), cols[0].x, y);
+
+    doc.setFont("helvetica", "bold");
+    doc.setTextColor(...(STATUS_RGB[issue.status] || [80, 80, 80]));
+    doc.text(issue.status, cols[1].x, y);
+
+    doc.setFont("helvetica", "normal");
+    doc.setTextColor(38, 41, 31);
+    doc.text(titleLines, cols[2].x, y);
+    doc.text(locationLines, cols[3].x, y);
+
+    const requesterLine = issue.requesterName
+      ? `${issue.requesterType} — ${issue.requesterName}`
+      : issue.requesterType;
+    doc.text(wrap(requesterLine, cols[4].w - 6, 2), cols[4].x, y);
+
+    y += rowH;
+  });
+
+  drawFooter(pageNum, totalPages);
+  return doc;
+}
+
+function buildIndividualPdf(issue) {
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: "pt", format: "letter", orientation: "portrait" });
+  const pageW = doc.internal.pageSize.getWidth();
+  const marginX = 56;
+  let y = 64;
+
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(18);
+  doc.setTextColor(27, 67, 50);
+  doc.text("Com Trak — Request Detail", marginX, y);
+  y += 18;
+
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(9.5);
+  doc.setTextColor(90, 90, 80);
+  doc.text(`Generated ${new Date().toLocaleString()}`, marginX, y);
+  y += 22;
+
+  const statusRgb = STATUS_RGB[issue.status] || [80, 80, 80];
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(11);
+  doc.setTextColor(...statusRgb);
+  doc.text(issue.status.toUpperCase(), marginX, y);
+  y += 26;
+
+  doc.setDrawColor(220, 213, 190);
+  doc.line(marginX, y, pageW - marginX, y);
+  y += 26;
+
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(15);
+  doc.setTextColor(38, 41, 31);
+  const titleLines = doc.splitTextToSize(issue.title || "Untitled request", pageW - marginX * 2);
+  doc.text(titleLines, marginX, y);
+  y += titleLines.length * 18 + 14;
+
+  function field(label, value) {
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(9.5);
+    doc.setTextColor(140, 140, 125);
+    doc.text(label.toUpperCase(), marginX, y);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(11.5);
+    doc.setTextColor(38, 41, 31);
+    doc.text(String(value || "—"), marginX + 130, y);
+    y += 22;
+  }
+
+  field("Category", issue.category);
+  field("Location", issue.location);
+  field("Requester type", issue.requesterType);
+  field("Requester name", issue.requesterName);
+  field("Created", issue.createdAt ? new Date(issue.createdAt).toLocaleString() : "—");
+  field("Last updated", issue.updatedAt ? new Date(issue.updatedAt).toLocaleString() : "—");
+
+  y += 10;
+  doc.setDrawColor(220, 213, 190);
+  doc.line(marginX, y, pageW - marginX, y);
+  y += 26;
+
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(9.5);
+  doc.setTextColor(140, 140, 125);
+  doc.text("DETAILS", marginX, y);
+  y += 18;
+
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(11);
+  doc.setTextColor(38, 41, 31);
+  const descLines = doc.splitTextToSize(issue.description || "No additional details recorded.", pageW - marginX * 2);
+  doc.text(descLines, marginX, y);
+
+  return doc;
+}
+
+function downloadDoc(doc, filename) {
+  doc.save(filename);
+}
+
+function printDoc(doc) {
+  const blobUrl = doc.output("bloburl");
+  window.open(blobUrl, "_blank");
+}
+
+async function shareDoc(doc, filename, onFallback) {
+  const blob = doc.output("blob");
+  const file = new File([blob], filename, { type: "application/pdf" });
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    try {
+      await navigator.share({ files: [file], title: "Com Trak" });
+      return;
+    } catch (e) {
+      return;
+    }
+  }
+  doc.save(filename);
+  if (onFallback) onFallback();
+}
+
+function slugify(text) {
+  return String(text || "request")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)/g, "")
+    .slice(0, 40) || "request";
+}
+
 function CommunityTracker() {
   const [categories, setCategories] = useState(DEFAULT_CATEGORIES);
   const [issues, setIssues] = useState([]);
   const [loaded, setLoaded] = useState(false);
-  const [syncState, setSyncState] = useState("idle"); // idle | syncing | offline
+  const [syncState, setSyncState] = useState("idle"); // idle | syncing | offline | unconfigured
+  const [config, setConfig] = useState(() => readConfig());
 
   const [activeCategory, setActiveCategory] = useState("All");
   const [activeStatus, setActiveStatus] = useState("All");
@@ -120,11 +372,15 @@ function CommunityTracker() {
   const [issueModal, setIssueModal] = useState(null);
   const [catModal, setCatModal] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(null);
+  const [reportModal, setReportModal] = useState(false);
+  const [settingsModal, setSettingsModal] = useState(false);
 
   const firstLoad = useRef(true);
   const saveTimer = useRef(null);
   const fileInputRef = useRef(null);
   const [importMsg, setImportMsg] = useState("");
+
+  const isConfigured = Boolean(config.binId && config.masterKey);
 
   // Initial load: local cache first (instant), then reconcile with JSONBin
   useEffect(() => {
@@ -133,9 +389,14 @@ function CommunityTracker() {
       if (Array.isArray(local.categories) && local.categories.length) setCategories(local.categories);
       if (Array.isArray(local.issues)) setIssues(local.issues);
     }
+    if (!isConfigured) {
+      setSyncState("unconfigured");
+      setLoaded(true);
+      return;
+    }
     (async () => {
       try {
-        const remote = await fetchFromJsonBin();
+        const remote = await fetchFromJsonBin(config);
         if (remote && Array.isArray(remote.issues)) {
           setIssues(remote.issues);
           if (Array.isArray(remote.categories) && remote.categories.length) {
@@ -145,12 +406,12 @@ function CommunityTracker() {
         }
         setSyncState("idle");
       } catch (e) {
-        setSyncState(local ? "offline" : "offline");
+        setSyncState("offline");
       } finally {
         setLoaded(true);
       }
     })();
-  }, []);
+  }, [config.binId, config.masterKey]);
 
   // Save on every change: local instantly, JSONBin debounced
   useEffect(() => {
@@ -158,17 +419,24 @@ function CommunityTracker() {
     if (firstLoad.current) { firstLoad.current = false; return; }
     const payload = { categories, issues };
     writeLocal(payload);
+    if (!isConfigured) { setSyncState("unconfigured"); return; }
     setSyncState("syncing");
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
       try {
-        const ok = await pushToJsonBin(payload);
+        const ok = await pushToJsonBin(config, payload);
         setSyncState(ok ? "idle" : "offline");
       } catch (e) {
         setSyncState("offline");
       }
     }, 600);
   }, [categories, issues, loaded]);
+
+  function saveConfig(next) {
+    writeConfig(next);
+    setConfig(next);
+    firstLoad.current = true; // avoid re-pushing stale data before the reconcile effect runs
+  }
 
   const counts = useMemo(() => {
     const c = { All: issues.length };
@@ -309,11 +577,13 @@ function CommunityTracker() {
         <div style={styles.headerStats}>
           <div style={styles.statChip}><span style={{ fontWeight: 600 }}>{counts.pending}</span> open</div>
           <div style={styles.statChip}><span style={{ fontWeight: 600 }}>{counts.total}</span> total</div>
-          <div style={{ ...styles.statChip, color: syncState === "offline" ? "#A8442F" : "#5B5A48" }}>
-            {syncState === "syncing" ? "Syncing…" : syncState === "offline" ? "Offline (saved locally)" : "Synced"}
+          <div style={{ ...styles.statChip, color: (syncState === "offline" || syncState === "unconfigured") ? "#A8442F" : "#5B5A48" }}>
+            {syncState === "syncing" ? "Syncing…" : syncState === "offline" ? "Offline (saved locally)" : syncState === "unconfigured" ? "Not synced" : "Synced"}
           </div>
           <button style={styles.secondaryBtn} className="ct-btn" onClick={triggerImport}>Import</button>
           <button style={styles.secondaryBtn} className="ct-btn" onClick={exportData}>Export</button>
+          <button style={styles.secondaryBtn} className="ct-btn" onClick={() => setReportModal(true)}>Report</button>
+          <button style={styles.secondaryBtn} className="ct-btn" onClick={() => setSettingsModal(true)}>Settings</button>
           <input ref={fileInputRef} type="file" accept="application/json" style={{ display: "none" }} onChange={handleImportFile} />
           <button style={styles.primaryBtn} className="ct-btn" onClick={openNewIssue}>+ New request</button>
         </div>
@@ -385,6 +655,20 @@ function CommunityTracker() {
       {confirmDelete && (
         <ConfirmModal name={confirmDelete} inUseCount={issues.filter((i) => i.category === confirmDelete).length}
           onCancel={() => setConfirmDelete(null)} onConfirm={() => deleteCategory(confirmDelete)} />
+      )}
+      {reportModal && (
+        <ReportModal
+          issues={issues}
+          categories={categories}
+          onClose={() => setReportModal(false)}
+        />
+      )}
+      {settingsModal && (
+        <SettingsModal
+          config={config}
+          onClose={() => setSettingsModal(false)}
+          onSave={saveConfig}
+        />
       )}
     </div>
   );
@@ -525,6 +809,98 @@ function IssueModal({ mode, issue, categories, onClose, onSave, onDelete, onStat
   );
 }
 
+function SettingsModal({ config, onClose, onSave }) {
+  const [binId, setBinId] = useState(config.binId || "");
+  const [masterKey, setMasterKey] = useState(config.masterKey || "");
+  const [showKey, setShowKey] = useState(false);
+  const [testStatus, setTestStatus] = useState("idle"); // idle | testing | ok | error
+  const [testMsg, setTestMsg] = useState("");
+  const [error, setError] = useState("");
+
+  async function testConnection() {
+    if (!binId.trim() || !masterKey.trim()) {
+      setError("Enter both a Bin ID and a Master Key first.");
+      return;
+    }
+    setError("");
+    setTestStatus("testing");
+    setTestMsg("");
+    try {
+      await fetchFromJsonBin({ binId: binId.trim(), masterKey: masterKey.trim() });
+      setTestStatus("ok");
+      setTestMsg("Connected successfully.");
+    } catch (e) {
+      setTestStatus("error");
+      setTestMsg("Couldn't connect — double check the Bin ID and Master Key.");
+    }
+  }
+
+  function handleSave() {
+    if (!binId.trim() || !masterKey.trim()) {
+      setError("Enter both a Bin ID and a Master Key, or use Disconnect below.");
+      return;
+    }
+    onSave({ binId: binId.trim(), masterKey: masterKey.trim() });
+    onClose();
+  }
+
+  function handleDisconnect() {
+    onSave({ binId: "", masterKey: "" });
+    onClose();
+  }
+
+  return (
+    <div style={styles.overlay} onClick={onClose}>
+      <div style={{ ...styles.modal, maxWidth: 440 }} onClick={(e) => e.stopPropagation()}>
+        <div style={styles.modalHeader}>
+          <div style={styles.modalTitle}>Settings</div>
+          <button style={styles.iconBtn} onClick={onClose}>✕</button>
+        </div>
+        <div style={styles.modalBody}>
+          <div style={{ fontSize: 12.5, color: "#9B9880", lineHeight: 1.5 }}>
+            These connect Com Trak to your JSONBin.io bin, so your data syncs and backs up across devices. They're stored only on this device, never sent anywhere except JSONBin.
+          </div>
+
+          <label style={styles.label}>Bin ID</label>
+          <input style={styles.input} value={binId} placeholder="e.g. 66f1a2b3c4d5e6f7a8b9c0d1"
+            onChange={(e) => { setBinId(e.target.value); setTestStatus("idle"); setError(""); }} />
+
+          <label style={styles.label}>Master Key</label>
+          <div style={{ display: "flex", gap: 8 }}>
+            <input style={{ ...styles.input, flex: 1 }} type={showKey ? "text" : "password"} value={masterKey}
+              placeholder="Your JSONBin master key"
+              onChange={(e) => { setMasterKey(e.target.value); setTestStatus("idle"); setError(""); }} />
+            <button style={styles.smallBtn} className="ct-btn" onClick={() => setShowKey((s) => !s)}>
+              {showKey ? "Hide" : "Show"}
+            </button>
+          </div>
+          {error && <div style={styles.fieldError}>{error}</div>}
+
+          <div style={{ marginTop: 14 }}>
+            <button style={styles.secondaryBtn} className="ct-btn" onClick={testConnection} disabled={testStatus === "testing"}>
+              {testStatus === "testing" ? "Testing…" : "Test connection"}
+            </button>
+            {testMsg && (
+              <div style={{ fontSize: 12.5, marginTop: 8, color: testStatus === "ok" ? "#1B4332" : "#A8442F" }}>
+                {testMsg}
+              </div>
+            )}
+          </div>
+
+          <div style={styles.reportActions}>
+            <button style={styles.primaryBtn} className="ct-btn" onClick={handleSave}>Save</button>
+            <button style={styles.dangerText} onClick={handleDisconnect}>Disconnect (keep data on this device only)</button>
+          </div>
+        </div>
+        <div style={styles.modalFooter}>
+          <span />
+          <button style={styles.secondaryBtn} className="ct-btn" onClick={onClose}>Cancel</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function CategoryModal({ categories, counts, onClose, onAdd, onRename, onRequestDelete }) {
   const [newCat, setNewCat] = useState("");
   const [editing, setEditing] = useState(null);
@@ -573,6 +949,211 @@ function CategoryModal({ categories, counts, onClose, onAdd, onRename, onRequest
         <div style={styles.modalFooter}>
           <span />
           <button style={styles.primaryBtn} className="ct-btn" onClick={onClose}>Done</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const STATUS_FILTERS = ["Pending", "In Progress", "Resolved", "All"];
+
+function ReportModal({ issues, categories, onClose }) {
+  const [step, setStep] = useState("type"); // type | individual-pick | individual-actions | category-status | category-actions
+  const [reportType, setReportType] = useState(null); // "individual" | "category"
+  const [statusFilter, setStatusFilter] = useState("All");
+  const [category, setCategory] = useState(categories[0] || "");
+  const [selectedIssue, setSelectedIssue] = useState(null);
+  const [busy, setBusy] = useState(null);
+  const [fallbackMsg, setFallbackMsg] = useState("");
+
+  function matchesStatus(issue) {
+    return statusFilter === "All" || issue.status === statusFilter;
+  }
+
+  const individualCandidates = useMemo(() => {
+    return issues
+      .filter(matchesStatus)
+      .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+  }, [issues, statusFilter]);
+
+  const categoryCandidates = useMemo(() => {
+    return issues.filter((i) => i.category === category && matchesStatus(i));
+  }, [issues, category, statusFilter]);
+
+  function pickType(type) {
+    setReportType(type);
+    setStatusFilter("All");
+    setStep(type === "individual" ? "individual-pick" : "category-status");
+  }
+
+  function pickIssue(issue) {
+    setSelectedIssue(issue);
+    setStep("individual-actions");
+  }
+
+  async function run(kind, action) {
+    setBusy(kind);
+    setFallbackMsg("");
+    try {
+      await action();
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  function individualDoc() {
+    return buildIndividualPdf(selectedIssue);
+  }
+  function individualFilename() {
+    return `com-trak-${slugify(selectedIssue.title)}.pdf`;
+  }
+
+  function categoryMeta() {
+    const statusCounts = { Pending: 0, "In Progress": 0, Resolved: 0 };
+    categoryCandidates.forEach((i) => { if (statusCounts[i.status] !== undefined) statusCounts[i.status]++; });
+    return {
+      generatedAt: new Date().toLocaleString(),
+      filterLine: `Category: ${category} — Status: ${statusFilter} — ${categoryCandidates.length} request${categoryCandidates.length === 1 ? "" : "s"}`,
+      counts: statusCounts,
+    };
+  }
+  function categoryDoc() {
+    return buildReportPdf(categoryCandidates, categoryMeta());
+  }
+  function categoryFilename() {
+    return `com-trak-${slugify(category)}-report-${new Date().toISOString().slice(0, 10)}.pdf`;
+  }
+
+  function actionButtons(getDoc, getFilename) {
+    return (
+      <div style={styles.reportActions}>
+        <button style={styles.primaryBtn} className="ct-btn" disabled={busy !== null}
+          onClick={() => run("download", () => downloadDoc(getDoc(), getFilename()))}>
+          {busy === "download" ? "Preparing…" : "Download PDF"}
+        </button>
+        <button style={styles.secondaryBtn} className="ct-btn" disabled={busy !== null}
+          onClick={() => run("print", () => printDoc(getDoc()))}>
+          {busy === "print" ? "Opening…" : "Open to print"}
+        </button>
+        <button style={styles.secondaryBtn} className="ct-btn" disabled={busy !== null}
+          onClick={() => run("share", () => shareDoc(getDoc(), getFilename(), () => setFallbackMsg("Sharing isn't supported in this browser — the PDF downloaded instead, so you can attach it to an email manually.")))}>
+          {busy === "share" ? "Preparing…" : "Share / Email PDF"}
+        </button>
+        {fallbackMsg && <div style={{ fontSize: 12, color: "#9B9880", marginTop: 4 }}>{fallbackMsg}</div>}
+      </div>
+    );
+  }
+
+  function backTo(target) {
+    setFallbackMsg("");
+    setStep(target);
+  }
+
+  let title = "Report";
+  let body = null;
+
+  if (step === "type") {
+    title = "Report";
+    body = (
+      <div style={styles.reportTypeGrid}>
+        <div className="ct-btn" style={styles.reportTypeCard} onClick={() => pickType("individual")}>
+          <div style={styles.reportTypeTitle}>Individual request</div>
+          <div style={styles.reportTypeDesc}>A detailed one-page PDF for a single request you choose.</div>
+        </div>
+        <div className="ct-btn" style={styles.reportTypeCard} onClick={() => pickType("category")}>
+          <div style={styles.reportTypeTitle}>Category summary</div>
+          <div style={styles.reportTypeDesc}>A table of every request in one category, filtered by status.</div>
+        </div>
+      </div>
+    );
+  } else if (step === "individual-pick") {
+    title = "Choose a request";
+    body = (
+      <div>
+        <div style={styles.statusTabs}>
+          {STATUS_FILTERS.map((s) => (
+            <div key={s} onClick={() => setStatusFilter(s)} style={{ ...styles.statusTab, ...(statusFilter === s ? styles.statusTabActive : {}) }}>{s}</div>
+          ))}
+        </div>
+        <div className="ct-scroll" style={styles.reportPickList}>
+          {individualCandidates.length === 0 && (
+            <div style={{ fontSize: 13, color: "#9B9880", padding: "16px 4px" }}>No requests match that status.</div>
+          )}
+          {individualCandidates.map((issue) => (
+            <div key={issue.id} className="ct-cat" style={styles.reportPickRow} onClick={() => pickIssue(issue)}>
+              <span style={{ ...styles.statusDot, background: STATUS_COLOR[issue.status].dot }} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={styles.rowTitle}>{issue.title || "Untitled request"}</div>
+                <div style={styles.rowMeta}>{issue.category}{issue.location ? " · " + issue.location : ""}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  } else if (step === "individual-actions") {
+    title = "Individual request PDF";
+    body = (
+      <div>
+        <div style={{ fontSize: 13.5, color: "#26291F", fontWeight: 500 }}>{selectedIssue.title || "Untitled request"}</div>
+        <div style={{ fontSize: 12.5, color: "#9B9880", marginTop: 3 }}>{selectedIssue.category}{selectedIssue.location ? " · " + selectedIssue.location : ""} · {selectedIssue.status}</div>
+        {actionButtons(individualDoc, individualFilename)}
+      </div>
+    );
+  } else if (step === "category-status") {
+    title = "Category summary";
+    body = (
+      <div>
+        <label style={styles.label}>Category</label>
+        <select style={styles.input} value={category} onChange={(e) => setCategory(e.target.value)}>
+          {categories.map((c) => <option key={c} value={c}>{c}</option>)}
+        </select>
+        <label style={styles.label}>Status</label>
+        <div style={styles.statusTabs}>
+          {STATUS_FILTERS.map((s) => (
+            <div key={s} onClick={() => setStatusFilter(s)} style={{ ...styles.statusTab, ...(statusFilter === s ? styles.statusTabActive : {}) }}>{s}</div>
+          ))}
+        </div>
+        <div style={{ fontSize: 12.5, color: "#9B9880", marginTop: 14 }}>
+          {categoryCandidates.length} request{categoryCandidates.length === 1 ? "" : "s"} match.
+        </div>
+        <div style={styles.reportActions}>
+          <button style={styles.primaryBtn} className="ct-btn" onClick={() => setStep("category-actions")}>Continue</button>
+        </div>
+      </div>
+    );
+  } else if (step === "category-actions") {
+    title = `${category} — ${statusFilter}`;
+    body = (
+      <div>
+        <div style={{ fontSize: 13, color: "#5B5A48" }}>
+          {categoryCandidates.length} request{categoryCandidates.length === 1 ? "" : "s"} will be included.
+        </div>
+        {actionButtons(categoryDoc, categoryFilename)}
+      </div>
+    );
+  }
+
+  const backTarget = {
+    "individual-pick": "type",
+    "individual-actions": "individual-pick",
+    "category-status": "type",
+    "category-actions": "category-status",
+  }[step];
+
+  return (
+    <div style={styles.overlay} onClick={onClose}>
+      <div style={{ ...styles.modal, maxWidth: 440 }} onClick={(e) => e.stopPropagation()}>
+        <div style={styles.modalHeader}>
+          <div style={styles.modalTitle}>{title}</div>
+          <button style={styles.iconBtn} onClick={onClose}>✕</button>
+        </div>
+        <div style={styles.modalBody}>{body}</div>
+        <div style={styles.modalFooter}>
+          {backTarget ? (
+            <button style={styles.secondaryBtn} className="ct-btn" onClick={() => backTo(backTarget)}>Back</button>
+          ) : <span />}
+          <button style={styles.secondaryBtn} className="ct-btn" onClick={onClose}>Close</button>
         </div>
       </div>
     </div>
@@ -661,6 +1242,15 @@ const styles = {
   dropdownCounts: { display: "flex", gap: 5, flexShrink: 0 },
   countPill: { minWidth: 22, textAlign: "center", fontSize: 11.5, fontWeight: 600, padding: "2px 6px", borderRadius: 20 },
   dropdownFooter: { paddingTop: 6, marginTop: 4, borderTop: "1px solid #F1EEE0" },
+
+  reportCounts: { display: "flex", gap: 14, fontSize: 12.5, fontWeight: 600, marginTop: 14, flexWrap: "wrap" },
+  reportActions: { display: "flex", flexDirection: "column", gap: 8, marginTop: 20 },
+  reportTypeGrid: { display: "flex", flexDirection: "column", gap: 10 },
+  reportTypeCard: { border: "1px solid #DCD5BE", borderRadius: 10, padding: "14px 16px", cursor: "pointer" },
+  reportTypeTitle: { fontSize: 14.5, fontWeight: 500, color: "#173C2C", marginBottom: 4 },
+  reportTypeDesc: { fontSize: 12.5, color: "#9B9880", lineHeight: 1.5 },
+  reportPickList: { marginTop: 12, maxHeight: 300, overflowY: "auto", display: "flex", flexDirection: "column", gap: 2 },
+  reportPickRow: { display: "flex", alignItems: "center", gap: 10, padding: "9px 8px", borderRadius: 8, cursor: "pointer" },
 };
 
 const root = ReactDOM.createRoot(document.getElementById("root"));
