@@ -35,7 +35,7 @@ const { useState, useEffect, useMemo, useRef } = React;
 
 // ---- CONFIGURE THIS ----
 const JSONBIN_BIN_ID = "6a9c3abada38895dfe3ce29c";
-const JSONBIN_ACCESS_KEY = "$2a$10$JwcztX73dFpXkiluHwf/qekcfPcCX5eqqtEJRgYXenElipJBPxlvi";
+const JSONBIN_MASTER_KEY = "$2a$10$JwcztX73dFpXkiluHwf/qekcfPcCX5eqqtEJRgYXenElipJBPxlvi";
 // -------------------------
 
 const JSONBIN_BASE = `https://api.jsonbin.io/v3/b/${JSONBIN_BIN_ID}`;
@@ -43,7 +43,7 @@ const LOCAL_KEY = "needs-tracker-data";
 
 async function fetchFromJsonBin() {
   const res = await fetch(`${JSONBIN_BASE}/latest`, {
-    headers: { "X-Access-Key": JSONBIN_ACCESS_KEY },
+    headers: { "X-Master-Key": JSONBIN_MASTER_KEY },
   });
   if (!res.ok) throw new Error("jsonbin read failed");
   const data = await res.json();
@@ -55,7 +55,7 @@ async function pushToJsonBin(payload) {
     method: "PUT",
     headers: {
       "Content-Type": "application/json",
-      "X-Access-Key": JSONBIN_ACCESS_KEY,
+      "X-Master-Key": JSONBIN_MASTER_KEY,
     },
     body: JSON.stringify(payload),
   });
